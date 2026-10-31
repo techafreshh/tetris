@@ -94,6 +94,8 @@ export class Game {
   public combo: number = -1;
   /** Total pieces locked this run (for PPS). */
   public piecesPlaced: number = 0;
+  /** Total locks this run (diffed for lock/clear fanfare, y-independent). */
+  public locks: number = 0;
   /** Highest combo chain reached this run (0 means none or one isolated clear). */
   public maxCombo: number = 0;
   /** True when the last scoring clear was difficult. */
@@ -172,6 +174,7 @@ export class Game {
     this.canHold = true;
     this.combo = -1;
     this.piecesPlaced = 0;
+    this.locks = 0;
     this.maxCombo = 0;
     this.backToBack = false;
     this.lastEvent = "";
@@ -624,9 +627,11 @@ export class Game {
     if (blockOut) {
       this.activeState = null;
       this.state = "gameover";
+      this.locks += 1;
       return;
     }
     this.spawnNext();
+    this.locks += 1;
   }
 }
 

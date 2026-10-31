@@ -1,6 +1,6 @@
 // Behavior tests for the pure game state machine.
 import { describe, expect, it } from "vitest";
-import { COLS, HIDDEN_ROWS, ROWS, gravityIntervalMsForLevel } from "./constants";
+import { COLS, HIDDEN_ROWS, LOCK_DELAY_MS, ROWS, gravityIntervalMsForLevel } from "./constants";
 import { createGame } from "./game";
 
 function countCells(grid: number[][]): number {
@@ -82,6 +82,32 @@ describe("run counters", (): void => {
     expect(game.piecesPlaced).toBe(0);
     expect(game.maxCombo).toBe(0);
     expect(game.combo).toBe(-1);
+  });
+});
+
+describe("locks counter", (): void => {
+  it("increments locks by 1 per hardDrop lock", (): void => {
+    const game = createGame(42);
+    expect(game.locks).toBe(0);
+    game.hardDrop();
+    expect(game.locks).toBe(1);
+    game.hardDrop();
+    expect(game.locks).toBe(2);
+  });
+
+  it("resets locks to 0 on start", (): void => {
+    const game = createGame(8);
+    game.hardDrop();
+    expect(game.locks).toBeGreaterThan(0);
+    game.start();
+    expect(game.locks).toBe(0);
+  });
+
+  it("increments locks on a grounded natural lock", (): void => {
+    const game = groundActive(555);
+    expect(game.locks).toBe(0);
+    game.update(LOCK_DELAY_MS);
+    expect(game.locks).toBe(1);
   });
 });
 
