@@ -92,6 +92,10 @@ export class Game {
   public canHold: boolean = true;
   /** Consecutive scoring clears (-1 means no chain). */
   public combo: number = -1;
+  /** Total pieces locked this run (for PPS). */
+  public piecesPlaced: number = 0;
+  /** Highest combo chain reached this run (0 means none or one isolated clear). */
+  public maxCombo: number = 0;
   /** True when the last scoring clear was difficult. */
   public backToBack: boolean = false;
   /** Sticky uppercase banner for the last scoring event. */
@@ -167,6 +171,8 @@ export class Game {
     this.held = null;
     this.canHold = true;
     this.combo = -1;
+    this.piecesPlaced = 0;
+    this.maxCombo = 0;
     this.backToBack = false;
     this.lastEvent = "";
     this.lastActionWasRotate = false;
@@ -507,6 +513,9 @@ export class Game {
     this.lines += Math.trunc(cleared);
     this.level = Math.floor(this.lines / LINES_PER_LEVEL) + 1;
     this.combo += 1;
+    if (this.combo > this.maxCombo) {
+      this.maxCombo = this.combo;
+    }
     this.score += scoreLineClear(capped, this.level, {
       backToBack: previousBackToBack,
       combo: this.combo,
@@ -589,6 +598,7 @@ export class Game {
     );
     const rows: number[] = findFullRows(this.boardState);
     const cleared = clearLines(this.boardState).count;
+    this.piecesPlaced += 1;
     this.applyClear(cleared, tSpin);
     this.lockSeq += 1;
     const stamped: LockCell[] = [];
