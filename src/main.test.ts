@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { STEP_MS, shouldPreventDefault, stepAccumulator } from "./main";
+import {
+  PIECE_START_X,
+  STEP_MS,
+  shouldPreventDefault,
+  stepAccumulator,
+  stepPieceX,
+} from "./main";
 
 describe("stepAccumulator", (): void => {
   it("slices 33.34ms into exactly two fixed steps with remainder below STEP_MS", (): void => {
@@ -36,5 +42,40 @@ describe("shouldPreventDefault", (): void => {
 describe("STEP_MS", (): void => {
   it("is exactly one 1000/60ms slice", (): void => {
     expect(STEP_MS).toBe(1000 / 60);
+  });
+});
+
+describe("stepPieceX", (): void => {
+  it("moves left and right by one column", (): void => {
+    expect(stepPieceX(5, "left-press")).toBe(4);
+    expect(stepPieceX(5, "left-held")).toBe(4);
+    expect(stepPieceX(5, "right-press")).toBe(6);
+    expect(stepPieceX(5, "right-held")).toBe(6);
+  });
+
+  it("clamps at the playfield walls", (): void => {
+    expect(stepPieceX(0, "left-press")).toBe(0);
+    expect(stepPieceX(0, "left-held")).toBe(0);
+    expect(stepPieceX(9, "right-press")).toBe(9);
+    expect(stepPieceX(9, "right-held")).toBe(9);
+  });
+
+  it("leaves the column unchanged for non-movement intents", (): void => {
+    expect(stepPieceX(5, "rotate-cw")).toBe(5);
+    expect(stepPieceX(5, "rotate-ccw")).toBe(5);
+    expect(stepPieceX(5, "hard-drop")).toBe(5);
+    expect(stepPieceX(5, "hold")).toBe(5);
+    expect(stepPieceX(5, "pause")).toBe(5);
+    expect(stepPieceX(5, "restart")).toBe(5);
+    expect(stepPieceX(5, "mute")).toBe(5);
+  });
+
+  it("starts central with leftward sweep room", (): void => {
+    expect(PIECE_START_X).toBe(5);
+    let x: number = PIECE_START_X;
+    for (let i = 0; i < 4; i++) {
+      x = stepPieceX(x, "left-held");
+    }
+    expect(x).toBe(1);
   });
 });
