@@ -3,6 +3,7 @@
 import { COLS, HIDDEN_ROWS, PIECE_COLORS, ROWS } from "../core/constants";
 import { PIECES } from "../core/pieces";
 import type { CellOffset, PieceKind } from "../core/pieces";
+import type { EffectsSnapshot } from "./effects";
 
 /** CSS cell size in pixels; canvas CSS box is COLS*24 by ROWS*24. */
 export const CSS_CELL_PX: number = 24;
@@ -169,13 +170,15 @@ function resolveCssSize(canvas: HTMLCanvasElement): {
 
 /**
  * Render the 10x20 playfield with locked blocks, ghost preview, active
- * piece, and grid lines at devicePixelRatio sharpness.
+ * piece, juice overlays, and grid lines at devicePixelRatio sharpness.
  * @param canvas Target canvas element.
  * @param state Plain render state (board grid plus active piece).
+ * @param fx Optional juice snapshot (flash/collapse/shake); skipped when null.
  */
 export function renderPlayfield(
   canvas: HTMLCanvasElement,
   state: RenderState,
+  fx?: EffectsSnapshot | null,
 ): void {
   const { cssWidth, cssHeight } = resolveCssSize(canvas);
   resizeCanvasForDpr(canvas, cssWidth, cssHeight);
@@ -188,6 +191,10 @@ export function renderPlayfield(
   const offsetY: number = (cssHeight - cell * ROWS) / 2;
   ctx.fillStyle = BACKGROUND_COLOR;
   ctx.fillRect(0, 0, cssWidth, cssHeight);
+  const shakeDx: number = fx?.shakeDx ?? 0;
+  const shakeDy: number = fx?.shakeDy ?? 0;
+  ctx.save();
+  ctx.translate(shakeDx, shakeDy);
   const board: readonly (readonly number[])[] = state.board;
   for (let y = HIDDEN_ROWS; y < board.length; y++) {
     const row: readonly number[] = board[y];
@@ -272,6 +279,40 @@ export function renderPlayfield(
       );
     }
   }
+  if (fx !== undefined && fx !== null) {
+    const clearFx = fx.clear;
+    if (clearFx.active) {
+      const height: number = cell * (1 - clearFx.collapse);
+      if (height > 0) {
+        ctx.fillStyle = `rgba(255,255,255,${clearFx.flashAlpha.toFixed(3)})`;
+        for (const row of clearFx.rows) {
+          const visible: number = row - HIDDEN_ROWS;
+          if (visible < 0 || visible >= ROWS) {
+            continue;
+          }
+          ctx.fillRect(
+            offsetX,
+            offsetY + (visible + clearFx.collapse / 2) * cell,
+            COLS * cell,
+            height,
+          );
+        }
+      }
+    }
+    const lockFx = fx.lock;
+    if (lockFx.active && lockFx.flashAlpha > 0) {
+      ctx.fillStyle = `rgba(255,255,255,${lockFx.flashAlpha.toFixed(3)})`;
+      for (const lockCell of lockFx.cells) {
+        const bx: number = lockCell[0];
+        const by: number = lockCell[1] - HIDDEN_ROWS;
+        if (by < 0 || by >= ROWS || bx < 0 || bx >= COLS) {
+          continue;
+        }
+        ctx.fillRect(offsetX + bx * cell, offsetY + by * cell, cell, cell);
+      }
+    }
+  }
+  ctx.restore();
   ctx.strokeStyle = GRID_COLOR;
   ctx.lineWidth = 1;
   ctx.beginPath();

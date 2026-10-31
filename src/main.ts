@@ -8,6 +8,8 @@ import { COLS } from "./core/constants";
 import { createGame, type Game } from "./core/game";
 import { CSS_HEIGHT, CSS_WIDTH, renderPlayfield } from "./render/canvas";
 import type { RenderState } from "./render/canvas";
+import { createEffects } from "./render/effects";
+import type { Effects } from "./render/effects";
 import { createKeyboard } from "./input/keyboard";
 import type { InputIntent, KeyboardInput } from "./input/keyboard";
 import { resetPanelsCache, syncEventText, syncPanels } from "./ui/panels";
@@ -92,6 +94,12 @@ let loopHandle: number = 0;
 
 /** Shared keyboard tracker drained once per frame. */
 let keyboard: KeyboardInput = createKeyboard();
+
+/** Renderer-only juice state (flash/collapse/shake); never gates logic. */
+let effects: Effects = createEffects();
+
+/** Last lockSeq forwarded to effects; detects new locks without polling rows. */
+let lastSeenSeq: number = 0;
 
 /** True when the key (or code) is a scroll key that must be default-prevented. */
 export function shouldPreventDefault(key: string, code: string): boolean {
@@ -188,6 +196,43 @@ export function update(stepMs: number, softDropHeld: boolean = false): void {
   }
 }
 
+/** Effect-clock timestamp: performance time where available, else epoch millis. */
+function effectNow(): number {
+  if (
+    typeof performance !== "undefined" &&
+    Number.isFinite(performance.now())
+  ) {
+    return performance.now();
+  }
+  return Date.now();
+}
+
+/**
+ * Forward new lock events from the game into the juice state machine.
+ * Resets tracking when lockSeq wrapped (game restarted) instead of
+ * replaying stale events.
+ */
+function syncEffects(nowMs: number): void {
+  const seq: number = game.lockSeq;
+  if (seq < lastSeenSeq) {
+    lastSeenSeq = seq;
+    return;
+  }
+  if (seq === lastSeenSeq) {
+    return;
+  }
+  lastSeenSeq = seq;
+  const event = game.lastLockEvent;
+  if (event === null || event.seq !== seq) {
+    return;
+  }
+  const now: number = Number.isFinite(nowMs) ? nowMs : 0;
+  if (event.rows.length > 0) {
+    effects.notifyClear(event.count, event.rows, event.tSpin, now);
+  }
+  effects.notifyLock(event.cells, now);
+}
+
 /** Push held/next/score/lines/level from the live game into the DOM panels. */
 function syncFromGame(): void {
   if (typeof document === "undefined") {
@@ -260,6 +305,12 @@ function patchGameSync(target: Game): void {
         setGameState("gameover");
       }
       mirrorProbes();
+      if (key === "start") {
+        effects.clear();
+        lastSeenSeq = target.lockSeq;
+      } else {
+        syncEffects(effectNow());
+      }
       return result;
     };
     (wrapped as unknown as { __panelsWrapped?: boolean }).__panelsWrapped =
@@ -356,9 +407,9 @@ function paint(canvas: HTMLCanvasElement): void {
   ctx.fillText(HINT, CSS_WIDTH / 2, CSS_HEIGHT / 2);
 }
 
-/** Active paint: live playfield with falling piece and ghost preview. */
-function paintPlaying(canvas: HTMLCanvasElement): void {
-  renderPlayfield(canvas, currentRenderState());
+/** Active paint: live playfield with falling piece, ghost, and juice overlays. */
+function paintPlaying(canvas: HTMLCanvasElement, nowMs: number): void {
+  renderPlayfield(canvas, currentRenderState(), effects.snapshot(nowMs));
 }
 
 /** rAF callback: drain keyboard intents, fold time into slices, repaint. */
@@ -395,6 +446,7 @@ function frame(nowMs: number): void {
     }
     syncFromGame();
   }
+  syncEffects(currentMs);
   mirrorProbes();
   const canvas = document.querySelector<HTMLCanvasElement>("#board");
   if (canvas !== null) {
@@ -403,7 +455,7 @@ function frame(nowMs: number): void {
       gameState === "paused" ||
       gameState === "gameover"
     ) {
-      paintPlaying(canvas);
+      paintPlaying(canvas, currentMs);
     } else {
       paint(canvas);
     }
@@ -459,7 +511,7 @@ function handleResize(): void {
     gameState === "paused" ||
     gameState === "gameover"
   ) {
-    paintPlaying(canvas);
+    paintPlaying(canvas, effectNow());
   } else {
     paint(canvas);
   }
