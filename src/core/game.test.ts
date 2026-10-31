@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { COLS, HIDDEN_ROWS, LOCK_DELAY_MS, ROWS, gravityIntervalMsForLevel } from "./constants";
 import { createGame } from "./game";
+import { PIECES } from "./pieces";
 
 function countCells(grid: number[][]): number {
   let total: number = 0;
@@ -274,5 +275,67 @@ describe("gravity curve levels", (): void => {
     expect(distance).toBeGreaterThan(0);
     expect(hardGame.score - hardBefore).toBe(2 * distance);
     expect(countCells(hardGame.board)).toBe(cellsBefore + 4);
+  });
+});
+
+describe("SRS wall kicks", (): void => {
+  it("rotateCW succeeds via kick when the base rotation is blocked at the right wall", (): void => {
+    const game = createGame(4);
+    expect(game.active?.kind).toBe("T");
+    let guard: number = 0;
+    while (game.moveRight() && guard < 50) {
+      guard++;
+    }
+    const beforeX: number = game.active?.x as number;
+    const beforeY: number = game.active?.y as number;
+    expect(game.active?.rotation).toBe(0);
+    expect(beforeX).toBe(7);
+    // Block the base 0>R landing cell (9, 1): the [0, 0] trial now
+    // collides, so only the [-1, 0] kick trial can rescue the rotation.
+    game.board[1][9] = 1;
+    expect(game.rotateCW()).toBe(true);
+    const after = game.active;
+    expect(after?.rotation).toBe(1);
+    // A position shift proves a non-[0, 0] kick offset applied,
+    // because the base trial preserves x and y.
+    expect(after?.x).toBe(beforeX - 1);
+    expect(after?.y).toBe(beforeY);
+    const cells = PIECES["T"].states[1];
+    for (const [cx, cy] of cells) {
+      expect((after?.x as number) + cx).toBeGreaterThanOrEqual(0);
+      expect((after?.x as number) + cx).toBeLessThan(COLS);
+      expect((after?.y as number) + cy).toBeGreaterThanOrEqual(0);
+      expect((after?.y as number) + cy).toBeLessThan(game.board.length);
+    }
+  });
+
+  it("rotateCCW succeeds via kick when the base rotation is blocked at the left wall", (): void => {
+    const game = createGame(4);
+    expect(game.active?.kind).toBe("T");
+    let guard: number = 0;
+    while (game.moveLeft() && guard < 50) {
+      guard++;
+    }
+    const beforeX: number = game.active?.x as number;
+    const beforeY: number = game.active?.y as number;
+    expect(game.active?.rotation).toBe(0);
+    expect(beforeX).toBe(0);
+    // Block the base 0>L landing cell (0, 1): the [0, 0] trial now
+    // collides, so only the [+1, 0] kick trial can rescue the rotation.
+    game.board[1][0] = 1;
+    expect(game.rotateCCW()).toBe(true);
+    const after = game.active;
+    expect(after?.rotation).toBe(3);
+    // A position shift proves a non-[0, 0] kick offset applied,
+    // because the base trial preserves x and y.
+    expect(after?.x).toBe(beforeX + 1);
+    expect(after?.y).toBe(beforeY);
+    const cells = PIECES["T"].states[3];
+    for (const [cx, cy] of cells) {
+      expect((after?.x as number) + cx).toBeGreaterThanOrEqual(0);
+      expect((after?.x as number) + cx).toBeLessThan(COLS);
+      expect((after?.y as number) + cy).toBeGreaterThanOrEqual(0);
+      expect((after?.y as number) + cy).toBeLessThan(game.board.length);
+    }
   });
 });

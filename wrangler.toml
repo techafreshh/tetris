@@ -1,0 +1,7 @@
+# Cloudflare Pages source of truth for the static build.
+# The operator connects this repo via Pages Git integration in the dashboard
+# (build command `npm run build`, output directory `dist`, branch `main`).
+# No tokens or credentials live in this repo.
+name = "tetris"
+compatibility_date = "2026-10-31"
+pages_build_output_dir = "./dist"
