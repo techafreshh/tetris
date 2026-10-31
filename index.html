@@ -88,6 +88,12 @@
       #stats[hidden] {
         display: none;
       }
+      #event-text {
+        min-height: 20px;
+        font-size: 14px;
+        letter-spacing: 3px;
+        color: #ffd75e;
+      }
       #overlay {
         position: fixed;
         inset: 0;
@@ -127,6 +133,7 @@
           <div><span class="label">LINES</span> <span id="lines">0</span></div>
           <div><span class="label">LEVEL</span> <span id="level">1</span></div>
         </div>
+        <div id="event-text" aria-live="polite"></div>
         <p>press any key</p>
       </div>
       <aside class="side-panel" aria-label="next">
