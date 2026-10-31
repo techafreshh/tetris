@@ -2,7 +2,11 @@
 // Keyboard intents (DAS/ARR) drained once per frame into a clamped column.
 // Attract prompt ("menu") boots to falling-piece state ("playing") on first key.
 
-import { COLS, SOFT_DROP_MULTIPLIER } from "./core/constants";
+import { COLS, HIDDEN_ROWS, SOFT_DROP_MULTIPLIER } from "./core/constants";
+import { createBoard } from "./core/board";
+import type { Board } from "./core/board";
+import { CSS_HEIGHT, CSS_WIDTH, renderPlayfield } from "./render/canvas";
+import type { RenderState } from "./render/canvas";
 import { createKeyboard } from "./input/keyboard";
 import type { InputIntent, KeyboardInput } from "./input/keyboard";
 
@@ -39,6 +43,35 @@ declare global {
 
 /** Placeholder prompt shown while in attract (menu) state. */
 const HINT = "press any key";
+
+/** Demo board with a small locked corner stack in guideline colors. */
+let demoBoard: Board | null = null;
+
+/** Lazily create the demo board (corner stack leaves the ghost path clear). */
+function getDemoBoard(): Board {
+  if (demoBoard === null) {
+    const fresh: Board = createBoard();
+    fresh.grid[fresh.rows - 1][0] = 1;
+    fresh.grid[fresh.rows - 1][1] = 2;
+    fresh.grid[fresh.rows - 1][2] = 3;
+    fresh.grid[fresh.rows - 2][0] = 4;
+    demoBoard = fresh;
+  }
+  return demoBoard;
+}
+
+/** Clamp the placeholder column into a T-piece box origin (3 cells wide). */
+function activeBoxX(): number {
+  return Math.max(0, Math.min(COLS - 3, Math.trunc(pieceX)));
+}
+
+/** Build the airborne demo state: T piece pinned to the top, ghost lands low. */
+function demoState(): RenderState {
+  return {
+    board: getDemoBoard().grid,
+    active: { kind: "T", x: activeBoxX(), y: HIDDEN_ROWS, rotation: 0 },
+  };
+}
 
 /** Pixels the placeholder piece falls per fixed step. */
 const PIECE_PX_PER_STEP: number = 2;
@@ -200,35 +233,23 @@ function applyIntent(intent: InputIntent): void {
   }
 }
 
-/** Attract paint: prompt text centered on a black background. */
+/** Attract paint: HiDPI playfield plus prompt text centered on top. */
 function paint(canvas: HTMLCanvasElement): void {
+  renderPlayfield(canvas, demoState());
   const ctx = canvas.getContext("2d");
   if (ctx === null) {
     return;
   }
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "#eee";
   ctx.font = "16px system-ui, sans-serif";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText(HINT, canvas.width / 2, canvas.height / 2);
+  ctx.fillText(HINT, CSS_WIDTH / 2, CSS_HEIGHT / 2);
 }
 
-/** Active paint: background plus falling block at the column position. */
+/** Active paint: HiDPI playfield with falling piece and ghost preview. */
 function paintPlaying(canvas: HTMLCanvasElement): void {
-  const ctx = canvas.getContext("2d");
-  if (ctx === null) {
-    return;
-  }
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#0ff";
-  const cellW: number = canvas.width / COLS;
-  const blockW: number = Math.min(20, cellW - 2);
-  const bx: number = pieceX * cellW + (cellW - blockW) / 2;
-  const y: number = pieceY % canvas.height;
-  ctx.fillRect(bx, y, blockW, 20);
+  renderPlayfield(canvas, demoState());
 }
 
 /** rAF callback: drain keyboard intents, fold time into slices, repaint. */
@@ -307,6 +328,19 @@ function handleBlurPause(): void {
   mirrorProbes();
 }
 
+/** Window resize: re-render the current state so the HiDPI store stays sharp. */
+function handleResize(): void {
+  const canvas = document.querySelector<HTMLCanvasElement>("#board");
+  if (canvas === null) {
+    return;
+  }
+  if (gameState === "playing" || gameState === "paused") {
+    paintPlaying(canvas);
+  } else {
+    paint(canvas);
+  }
+}
+
 /** Wire canvas, score node, keyboard intents, and the rAF loop. */
 function boot(): void {
   const app = document.querySelector<HTMLElement>("#app");
@@ -317,10 +351,16 @@ function boot(): void {
     }
     canvas = document.createElement("canvas");
     canvas.id = "board";
-    canvas.width = 240;
-    canvas.height = 400;
+    canvas.width = CSS_WIDTH;
+    canvas.height = CSS_HEIGHT;
     app.appendChild(canvas);
   }
+  canvas.style.width = `${CSS_WIDTH}px`;
+  canvas.style.height = `${CSS_HEIGHT}px`;
+  // Border would leak into getBoundingClientRect, breaking the
+  // canvas.width === cssWidth * dpr contract; outline keeps the frame look.
+  canvas.style.border = "none";
+  canvas.style.outline = "1px solid #555";
   if (app !== null && app.querySelector<HTMLElement>("#score") === null) {
     const score = document.createElement("div");
     score.id = "score";
@@ -341,6 +381,9 @@ function boot(): void {
   }
   paint(canvas);
   mirrorProbes();
+  if (typeof window !== "undefined") {
+    window.addEventListener("resize", handleResize);
+  }
   startLoop();
 }
 
