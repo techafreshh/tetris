@@ -22,6 +22,12 @@
       }
       #app {
         display: flex;
+        flex-direction: row;
+        align-items: flex-start;
+        gap: 16px;
+      }
+      #center {
+        display: flex;
         flex-direction: column;
         align-items: center;
         gap: 12px;
@@ -30,12 +36,84 @@
         border: 1px solid #555;
         background: #000;
       }
+      .side-panel {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        min-width: 110px;
+      }
+      .side-panel h2 {
+        margin: 0;
+        font-size: 14px;
+        letter-spacing: 3px;
+        color: #aaa;
+      }
+      #hold-slot,
+      #next-queue {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 72px;
+        border: 1px solid #555;
+        background: #000;
+        padding: 6px;
+      }
+      #hold-slot {
+        min-height: 40px;
+        align-items: center;
+        justify-content: center;
+      }
+      #hold-slot:empty::after {
+        content: "—";
+        color: #555;
+      }
+      #next-queue {
+        min-height: 200px;
+      }
+      .piece {
+        font-family: ui-monospace, monospace;
+        font-size: 18px;
+        font-weight: 700;
+        text-align: center;
+        line-height: 1.4;
+      }
+      #stats {
+        display: flex;
+        flex-direction: row;
+        gap: 16px;
+        font-size: 14px;
+        color: #ccc;
+      }
+      #stats[hidden] {
+        display: none;
+      }
+      #stats .label {
+        color: #888;
+        font-size: 11px;
+        letter-spacing: 2px;
+      }
     </style>
   </head>
   <body>
     <div id="app">
-      <canvas id="board" width="240" height="400">press any key</canvas>
-      <p>press any key</p>
+      <aside class="side-panel" aria-label="hold">
+        <h2>HOLD</h2>
+        <div id="hold-slot"></div>
+      </aside>
+      <div id="center">
+        <canvas id="board" width="240" height="400">press any key</canvas>
+        <div id="stats" hidden>
+          <div><span class="label">SCORE</span> <span id="score">0</span></div>
+          <div><span class="label">LINES</span> <span id="lines">0</span></div>
+          <div><span class="label">LEVEL</span> <span id="level">1</span></div>
+        </div>
+        <p>press any key</p>
+      </div>
+      <aside class="side-panel" aria-label="next">
+        <h2>NEXT</h2>
+        <div id="next-queue"></div>
+      </aside>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

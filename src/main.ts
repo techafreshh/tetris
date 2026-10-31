@@ -1,14 +1,17 @@
-// Fixed-timestep loop: rAF + accumulator driving placeholder playfield.
-// Keyboard intents (DAS/ARR) drained once per frame into a clamped column.
-// Attract prompt ("menu") boots to falling-piece state ("playing") on first key.
+// Fixed-timestep loop: rAF + accumulator driving the live core Game.
+// Keyboard intents (DAS/ARR) drained once per frame into game actions.
+// Attract prompt ("menu") boots to live play ("playing") on first key.
+// Side panels (HOLD/NEXT/stats) sync from the game every frame and after
+// every mutating call so black-box probes observe queue shifts and score.
 
-import { COLS, HIDDEN_ROWS, SOFT_DROP_MULTIPLIER } from "./core/constants";
-import { createBoard } from "./core/board";
-import type { Board } from "./core/board";
+import { COLS } from "./core/constants";
+import { createGame, type Game } from "./core/game";
 import { CSS_HEIGHT, CSS_WIDTH, renderPlayfield } from "./render/canvas";
 import type { RenderState } from "./render/canvas";
 import { createKeyboard } from "./input/keyboard";
 import type { InputIntent, KeyboardInput } from "./input/keyboard";
+import { resetPanelsCache, syncPanels } from "./ui/panels";
+import type { PanelData } from "./ui/panels";
 
 /**
  * Fixed logic step in milliseconds: exactly one 60 Hz slice (1000/60).
@@ -27,66 +30,50 @@ export const SCROLL_KEYS: readonly string[] = [
   "Spacebar",
 ];
 
-/** Placeholder column where a new piece spawns (central, left sweep room). */
+/** Placeholder column used when no piece is falling (central origin). */
 export const PIECE_START_X: number = 5;
 
-/** Attract, active, and paused states mirrored to window.__gameState. */
-export type LoopState = "menu" | "playing" | "paused";
+/** Deterministic seed for the live game (reset on boot and restart). */
+export const DEFAULT_SEED: number = 0;
+
+/** Attract, active, paused, and terminal states mirrored to window.__gameState. */
+export type LoopState = "menu" | "playing" | "paused" | "gameover";
 
 declare global {
   interface Window {
     __gameState: LoopState;
     __pieceX: number;
     __muted: boolean;
+    __game: Game;
   }
 }
 
 /** Placeholder prompt shown while in attract (menu) state. */
 const HINT = "press any key";
 
-/** Demo board with a small locked corner stack in guideline colors. */
-let demoBoard: Board | null = null;
-
-/** Lazily create the demo board (corner stack leaves the ghost path clear). */
-function getDemoBoard(): Board {
-  if (demoBoard === null) {
-    const fresh: Board = createBoard();
-    fresh.grid[fresh.rows - 1][0] = 1;
-    fresh.grid[fresh.rows - 1][1] = 2;
-    fresh.grid[fresh.rows - 1][2] = 3;
-    fresh.grid[fresh.rows - 2][0] = 4;
-    demoBoard = fresh;
-  }
-  return demoBoard;
-}
-
-/** Clamp the placeholder column into a T-piece box origin (3 cells wide). */
-function activeBoxX(): number {
-  return Math.max(0, Math.min(COLS - 3, Math.trunc(pieceX)));
-}
-
-/** Build the airborne demo state: T piece pinned to the top, ghost lands low. */
-function demoState(): RenderState {
-  return {
-    board: getDemoBoard().grid,
-    active: { kind: "T", x: activeBoxX(), y: HIDDEN_ROWS, rotation: 0 },
-  };
-}
-
-/** Pixels the placeholder piece falls per fixed step. */
-const PIECE_PX_PER_STEP: number = 2;
-
 /** Clamp per-frame delta so tab-switch jumps cannot inject huge progress. */
 const MAX_DELTA_MS: number = 100;
+
+/** Mutating Game methods mirrored to the panels after each direct call. */
+const PROBE_SYNCED_METHODS: readonly string[] = [
+  "moveLeft",
+  "moveRight",
+  "rotateCW",
+  "rotateCCW",
+  "softDrop",
+  "hardDrop",
+  "hold",
+  "update",
+  "start",
+  "pause",
+  "resume",
+];
 
 /** Current loop state; "menu" until the first keypress boots the game. */
 let gameState: LoopState = "menu";
 
-/** Vertical position in pixels of the placeholder falling block. */
-let pieceY: number = 0;
-
-/** Horizontal placeholder column in cells, clamped to 0..COLS-1. */
-let pieceX: number = PIECE_START_X;
+/** Live core game driven by the loop and drained keyboard intents. */
+let game: Game = createGame(DEFAULT_SEED);
 
 /** Mute flag toggled by KeyM and mirrored to window.__muted. */
 let muted: boolean = false;
@@ -122,14 +109,6 @@ function setGameState(next: LoopState): void {
   }
 }
 
-/** Assign the placeholder column and mirror it to window.__pieceX. */
-function setPieceX(next: number): void {
-  pieceX = next;
-  if (typeof window !== "undefined") {
-    window.__pieceX = next;
-  }
-}
-
 /** Assign the mute flag and mirror it to window.__muted. */
 function setMuted(next: boolean): void {
   muted = next;
@@ -143,9 +122,14 @@ function mirrorProbes(): void {
   if (typeof window === "undefined") {
     return;
   }
+  if (game.state === "gameover") {
+    gameState = "gameover";
+  }
   window.__gameState = gameState;
-  window.__pieceX = pieceX;
+  const active = game.active;
+  window.__pieceX = active !== null ? active.x : PIECE_START_X;
   window.__muted = muted;
+  window.__game = game;
 }
 
 /** Pure fixed-step slicing: whole steps contained in the accumulated time. */
@@ -180,62 +164,157 @@ export function stepPieceX(x: number, intent: InputIntent): number {
 }
 
 /**
- * Advance placeholder logic by one fixed step (falling block only).
- * Soft-drop held multiplies the fall speed by SOFT_DROP_MULTIPLIER (~20x).
+ * Advance live logic by one fixed step, plus one soft-drop cell while
+ * soft-drop is held.
  */
 export function update(stepMs: number, softDropHeld: boolean = false): void {
   if (!Number.isFinite(stepMs) || stepMs <= 0) {
     return;
   }
-  const speed: number = softDropHeld
-    ? PIECE_PX_PER_STEP * SOFT_DROP_MULTIPLIER
-    : PIECE_PX_PER_STEP;
-  pieceY += (stepMs / STEP_MS) * speed;
+  if (gameState !== "playing") {
+    return;
+  }
+  game.update(stepMs);
+  if (softDropHeld) {
+    game.softDrop();
+  }
+  if (game.state === "gameover") {
+    setGameState("gameover");
+  }
 }
 
-/** Apply one drained intent to the placeholder state. */
+/** Push held/next/score/lines/level from the live game into the DOM panels. */
+function syncFromGame(): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+  const hold = document.querySelector<HTMLElement>("#hold-slot");
+  const queue = document.querySelector<HTMLElement>("#next-queue");
+  const score = document.querySelector<HTMLElement>("#score");
+  const lines = document.querySelector<HTMLElement>("#lines");
+  const level = document.querySelector<HTMLElement>("#level");
+  if (
+    hold === null &&
+    queue === null &&
+    score === null &&
+    lines === null &&
+    level === null
+  ) {
+    return;
+  }
+  const data: PanelData = {
+    held: game.held,
+    next: game.next,
+    score: game.score,
+    lines: game.lines,
+    level: game.level,
+  };
+  syncPanels(hold, queue, score, lines, level, data);
+}
+
+/**
+ * Wrap mutating Game methods so direct window.__game calls (hardDrop
+ * probes) repaint the panels synchronously instead of waiting a frame.
+ */
+function patchGameSync(target: Game): void {
+  const record = target as unknown as Record<string, unknown>;
+  for (const key of PROBE_SYNCED_METHODS) {
+    const original: unknown = record[key];
+    if (typeof original !== "function") {
+      continue;
+    }
+    const fn = original as (...args: never[]) => unknown;
+    if (
+      (fn as unknown as { __panelsWrapped?: boolean }).__panelsWrapped === true
+    ) {
+      continue;
+    }
+    const wrapped = (...args: never[]): unknown => {
+      const result: unknown = fn.apply(target, args);
+      syncFromGame();
+      if (target.state === "gameover") {
+        setGameState("gameover");
+      }
+      mirrorProbes();
+      return result;
+    };
+    (wrapped as unknown as { __panelsWrapped?: boolean }).__panelsWrapped =
+      true;
+    record[key] = wrapped;
+  }
+}
+
+/** Apply one drained intent to the live game. */
 function applyIntent(intent: InputIntent): void {
+  if (intent === "mute") {
+    setMuted(!muted);
+    return;
+  }
   if (gameState === "menu") {
     return;
   }
   if (gameState === "paused") {
     if (intent === "pause") {
+      game.resume();
       setGameState("playing");
     } else if (intent === "restart") {
-      pieceY = 0;
-      setPieceX(PIECE_START_X);
+      game.start(DEFAULT_SEED);
       setGameState("playing");
-    } else if (intent === "mute") {
-      setMuted(!muted);
+    }
+    return;
+  }
+  if (gameState === "gameover") {
+    if (intent === "restart") {
+      game.start(DEFAULT_SEED);
+      setGameState("playing");
     }
     return;
   }
   switch (intent) {
     case "left-press":
     case "left-held":
+      game.moveLeft();
+      break;
     case "right-press":
     case "right-held":
-      setPieceX(stepPieceX(pieceX, intent));
+      game.moveRight();
+      break;
+    case "rotate-cw":
+      game.rotateCW();
+      break;
+    case "rotate-ccw":
+      game.rotateCCW();
+      break;
+    case "hard-drop":
+      game.hardDrop();
+      break;
+    case "hold":
+      game.hold();
       break;
     case "pause":
+      game.pause();
       setGameState("paused");
       break;
     case "restart":
-      pieceY = 0;
-      setPieceX(PIECE_START_X);
+      game.start(DEFAULT_SEED);
       setGameState("playing");
-      break;
-    case "mute":
-      setMuted(!muted);
       break;
     default:
       break;
   }
+  if (game.state === "gameover") {
+    setGameState("gameover");
+  }
 }
 
-/** Attract paint: HiDPI playfield plus prompt text centered on top. */
+/** Build the renderer input from the live game (board plus falling piece). */
+function currentRenderState(): RenderState {
+  return { board: game.board, active: game.active };
+}
+
+/** Attract paint: live playfield plus prompt text centered on top. */
 function paint(canvas: HTMLCanvasElement): void {
-  renderPlayfield(canvas, demoState());
+  renderPlayfield(canvas, currentRenderState());
   const ctx = canvas.getContext("2d");
   if (ctx === null) {
     return;
@@ -247,9 +326,9 @@ function paint(canvas: HTMLCanvasElement): void {
   ctx.fillText(HINT, CSS_WIDTH / 2, CSS_HEIGHT / 2);
 }
 
-/** Active paint: HiDPI playfield with falling piece and ghost preview. */
+/** Active paint: live playfield with falling piece and ghost preview. */
 function paintPlaying(canvas: HTMLCanvasElement): void {
-  renderPlayfield(canvas, demoState());
+  renderPlayfield(canvas, currentRenderState());
 }
 
 /** rAF callback: drain keyboard intents, fold time into slices, repaint. */
@@ -270,6 +349,9 @@ function frame(nowMs: number): void {
   for (const intent of intents) {
     applyIntent(intent);
   }
+  if (intents.length > 0) {
+    syncFromGame();
+  }
   accumulator += deltaMs;
   const sliced = stepAccumulator(accumulator);
   accumulator = sliced.remainder;
@@ -277,12 +359,20 @@ function frame(nowMs: number): void {
     const softHeld: boolean = keyboard.isHeld("softdrop");
     for (let i = 0; i < sliced.steps; i++) {
       update(STEP_MS, softHeld);
+      if (gameState !== "playing") {
+        break;
+      }
     }
+    syncFromGame();
   }
   mirrorProbes();
   const canvas = document.querySelector<HTMLCanvasElement>("#board");
   if (canvas !== null) {
-    if (gameState === "playing" || gameState === "paused") {
+    if (
+      gameState === "playing" ||
+      gameState === "paused" ||
+      gameState === "gameover"
+    ) {
       paintPlaying(canvas);
     } else {
       paint(canvas);
@@ -310,19 +400,19 @@ function handleAnyKey(): void {
   if (gameState !== "menu") {
     return;
   }
-  pieceY = 0;
-  setPieceX(PIECE_START_X);
   setGameState("playing");
-  const score = document.querySelector<HTMLElement>("#score");
-  if (score !== null) {
-    score.hidden = false;
+  const stats = document.querySelector<HTMLElement>("#stats");
+  if (stats !== null) {
+    stats.hidden = false;
   }
+  syncFromGame();
   startLoop();
 }
 
 /** Window blur: input is already cleared; pause active play. */
 function handleBlurPause(): void {
   if (gameState === "playing") {
+    game.pause();
     setGameState("paused");
   }
   mirrorProbes();
@@ -334,14 +424,18 @@ function handleResize(): void {
   if (canvas === null) {
     return;
   }
-  if (gameState === "playing" || gameState === "paused") {
+  if (
+    gameState === "playing" ||
+    gameState === "paused" ||
+    gameState === "gameover"
+  ) {
     paintPlaying(canvas);
   } else {
     paint(canvas);
   }
 }
 
-/** Wire canvas, score node, keyboard intents, and the rAF loop. */
+/** Wire canvas, panels, keyboard intents, and the rAF loop. */
 function boot(): void {
   const app = document.querySelector<HTMLElement>("#app");
   let canvas = document.querySelector<HTMLCanvasElement>("#board");
@@ -361,24 +455,19 @@ function boot(): void {
   // canvas.width === cssWidth * dpr contract; outline keeps the frame look.
   canvas.style.border = "none";
   canvas.style.outline = "1px solid #555";
-  if (app !== null && app.querySelector<HTMLElement>("#score") === null) {
-    const score = document.createElement("div");
-    score.id = "score";
-    score.textContent = "score 0";
-    score.hidden = true;
-    app.appendChild(score);
-  }
+  patchGameSync(game);
+  resetPanelsCache();
   keyboard.detach();
   keyboard = createKeyboard();
   keyboard.attach({ onAnyKey: handleAnyKey, onBlur: handleBlurPause });
+  game.start(DEFAULT_SEED);
   setGameState("menu");
-  setPieceX(PIECE_START_X);
   setMuted(false);
-  pieceY = 0;
-  const score = document.querySelector<HTMLElement>("#score");
-  if (score !== null) {
-    score.hidden = true;
+  const stats = document.querySelector<HTMLElement>("#stats");
+  if (stats !== null) {
+    stats.hidden = true;
   }
+  syncFromGame();
   paint(canvas);
   mirrorProbes();
   if (typeof window !== "undefined") {
