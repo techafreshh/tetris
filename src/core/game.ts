@@ -15,7 +15,7 @@ import { PIECES, SRS_KICKS_I, SRS_KICKS_JLSTZ } from "./pieces";
 import type { PieceKind, SrsKickKey } from "./pieces";
 import { createBag } from "./bag";
 import type { Bag } from "./bag";
-import { clearLines, createBoard } from "./board";
+import { clearLines, createBoard, findFullRows } from "./board";
 import type { Board } from "./board";
 import { isDifficultClear, scoreLineClear } from "./scoring";
 
@@ -38,6 +38,27 @@ export interface ActivePiece {
 
 /** Maximum lock-delay resets per piece via successful grounded moves/rotates. */
 export const MAX_LOCK_RESETS: number = 15;
+
+/** Board cell coordinate in absolute cells (box position plus offset). */
+export type LockCell = readonly [number, number];
+
+/**
+ * Renderer-only record of one lock: stamped cells, pre-clear full rows,
+ * cleared count, T-spin flag, and a monotonic sequence number.
+ * Written synchronously in `lockPiece`; effects read it, never block it.
+ */
+export interface LockEvent {
+  /** Absolute stamped cells of the locked piece (in-bounds only). */
+  readonly cells: readonly LockCell[];
+  /** Pre-clear full-row indices (ascending, hidden rows included). */
+  readonly rows: readonly number[];
+  /** Rows removed by this lock. */
+  readonly count: number;
+  /** True when the lock scored as a T-spin. */
+  readonly tSpin: boolean;
+  /** Monotonic sequence; polled once per frame by the render loop. */
+  readonly seq: number;
+}
 
 /** Rotation state names used to build SRS kick-table keys. */
 const ROTATION_NAMES: readonly string[] = ["0", "R", "2", "L"];
@@ -94,6 +115,10 @@ export class Game {
   private resetsUsed: number = 0;
   /** True when the last successful action before lock was a rotation. */
   private lastActionWasRotate: boolean = false;
+  /** Latest lock record for the renderer; null until the first lock. */
+  public lastLockEvent: LockEvent | null = null;
+  /** Monotonic lock counter; reset to 0 by `start`. */
+  public lockSeq: number = 0;
 
   /**
    * Create a game that starts in `playing` with an active piece.
@@ -148,6 +173,8 @@ export class Game {
     this.fallTimer = 0;
     this.lockTimer = 0;
     this.resetsUsed = 0;
+    this.lastLockEvent = null;
+    this.lockSeq = 0;
     this.state = "playing";
     this.spawnNext();
   }
@@ -560,8 +587,26 @@ export class Game {
     const blockOut: boolean = cells.every(
       ([, cy]: readonly [number, number]): boolean => piece.y + cy < HIDDEN_ROWS,
     );
+    const rows: number[] = findFullRows(this.boardState);
     const cleared = clearLines(this.boardState).count;
     this.applyClear(cleared, tSpin);
+    this.lockSeq += 1;
+    const stamped: LockCell[] = [];
+    for (const [cx, cy] of cells) {
+      const bx: number = piece.x + cx;
+      const by: number = piece.y + cy;
+      if (bx < 0 || bx >= COLS || by < 0 || by >= this.boardState.rows) {
+        continue;
+      }
+      stamped.push([bx, by]);
+    }
+    this.lastLockEvent = {
+      cells: stamped,
+      rows,
+      count: cleared,
+      tSpin,
+      seq: this.lockSeq,
+    };
     this.fallTimer = 0;
     this.lockTimer = 0;
     this.resetsUsed = 0;
