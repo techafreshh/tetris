@@ -12,6 +12,7 @@ import { createKeyboard } from "./input/keyboard";
 import type { InputIntent, KeyboardInput } from "./input/keyboard";
 import { resetPanelsCache, syncPanels } from "./ui/panels";
 import type { PanelData } from "./ui/panels";
+import { ensureOverlay, syncOverlay } from "./ui/overlay";
 
 /**
  * Fixed logic step in milliseconds: exactly one 60 Hz slice (1000/60).
@@ -107,6 +108,7 @@ function setGameState(next: LoopState): void {
   if (typeof window !== "undefined") {
     window.__gameState = next;
   }
+  syncOverlayFromState();
 }
 
 /** Assign the mute flag and mirror it to window.__muted. */
@@ -130,6 +132,7 @@ function mirrorProbes(): void {
   window.__pieceX = active !== null ? active.x : PIECE_START_X;
   window.__muted = muted;
   window.__game = game;
+  syncOverlayFromState();
 }
 
 /** Pure fixed-step slicing: whole steps contained in the accumulated time. */
@@ -212,6 +215,22 @@ function syncFromGame(): void {
   syncPanels(hold, queue, score, lines, level, data);
 }
 
+/** Push the loop state into the `#overlay` banner plus game-over summary. */
+function syncOverlayFromState(): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+  const overlay = document.querySelector<HTMLElement>("#overlay");
+  if (overlay === null) {
+    return;
+  }
+  if (gameState === "gameover") {
+    syncOverlay(overlay, gameState, `Score ${game.score} · Lines ${game.lines}`);
+  } else {
+    syncOverlay(overlay, gameState);
+  }
+}
+
 /**
  * Wrap mutating Game methods so direct window.__game calls (hardDrop
  * probes) repaint the panels synchronously instead of waiting a frame.
@@ -259,6 +278,8 @@ function applyIntent(intent: InputIntent): void {
       setGameState("playing");
     } else if (intent === "restart") {
       game.start(DEFAULT_SEED);
+      resetPanelsCache();
+      syncFromGame();
       setGameState("playing");
     }
     return;
@@ -266,6 +287,8 @@ function applyIntent(intent: InputIntent): void {
   if (gameState === "gameover") {
     if (intent === "restart") {
       game.start(DEFAULT_SEED);
+      resetPanelsCache();
+      syncFromGame();
       setGameState("playing");
     }
     return;
@@ -297,6 +320,8 @@ function applyIntent(intent: InputIntent): void {
       break;
     case "restart":
       game.start(DEFAULT_SEED);
+      resetPanelsCache();
+      syncFromGame();
       setGameState("playing");
       break;
     default:
@@ -457,6 +482,8 @@ function boot(): void {
   canvas.style.outline = "1px solid #555";
   patchGameSync(game);
   resetPanelsCache();
+  ensureOverlay();
+  syncOverlayFromState();
   keyboard.detach();
   keyboard = createKeyboard();
   keyboard.attach({ onAnyKey: handleAnyKey, onBlur: handleBlurPause });

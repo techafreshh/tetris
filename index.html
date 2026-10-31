@@ -88,6 +88,25 @@
       #stats[hidden] {
         display: none;
       }
+      #overlay {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        font-size: 32px;
+        font-weight: 800;
+        letter-spacing: 4px;
+        color: #fff;
+        background: rgba(0, 0, 0, 0.6);
+        z-index: 10;
+        pointer-events: none;
+      }
+      #overlay[hidden] {
+        display: none;
+      }
       #stats .label {
         color: #888;
         font-size: 11px;
@@ -115,6 +134,7 @@
         <div id="next-queue"></div>
       </aside>
     </div>
+    <div id="overlay" hidden></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
