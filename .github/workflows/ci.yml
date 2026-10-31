@@ -17,3 +17,11 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: deploy readiness
+        run: |
+          test -f dist/index.html
+          grep -q '<div id="app">' dist/index.html
+          grep -q '<canvas' dist/index.html
+          grep -q 'next-queue' dist/index.html
+          grep -q 'id="score"' dist/index.html
+          grep -q 'dist' wrangler.toml

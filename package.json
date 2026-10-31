@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "vitest run",
+    "audit:prod": "npm audit --omit=dev"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
