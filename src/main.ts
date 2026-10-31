@@ -1,5 +1,10 @@
 // Fixed-timestep loop: rAF + accumulator driving placeholder playfield.
+// Keyboard intents (DAS/ARR) drained once per frame into a clamped column.
 // Attract prompt ("menu") boots to falling-piece state ("playing") on first key.
+
+import { COLS, SOFT_DROP_MULTIPLIER } from "./core/constants";
+import { createKeyboard } from "./input/keyboard";
+import type { InputIntent, KeyboardInput } from "./input/keyboard";
 
 /**
  * Fixed logic step in milliseconds: exactly one 60 Hz slice (1000/60).
@@ -18,12 +23,17 @@ export const SCROLL_KEYS: readonly string[] = [
   "Spacebar",
 ];
 
-/** Attract vs active states mirrored to window.__gameState for probes. */
-export type LoopState = "menu" | "playing";
+/** Placeholder column where a new piece spawns (central, left sweep room). */
+export const PIECE_START_X: number = 5;
+
+/** Attract, active, and paused states mirrored to window.__gameState. */
+export type LoopState = "menu" | "playing" | "paused";
 
 declare global {
   interface Window {
     __gameState: LoopState;
+    __pieceX: number;
+    __muted: boolean;
   }
 }
 
@@ -42,6 +52,12 @@ let gameState: LoopState = "menu";
 /** Vertical position in pixels of the placeholder falling block. */
 let pieceY: number = 0;
 
+/** Horizontal placeholder column in cells, clamped to 0..COLS-1. */
+let pieceX: number = PIECE_START_X;
+
+/** Mute flag toggled by KeyM and mirrored to window.__muted. */
+let muted: boolean = false;
+
 /** Accumulated frame time awaiting fixed-step consumption. */
 let accumulator: number = 0;
 
@@ -50,6 +66,9 @@ let lastMs: number = 0;
 
 /** Active rAF handle; 0 means the loop has not started yet. */
 let loopHandle: number = 0;
+
+/** Shared keyboard tracker drained once per frame. */
+let keyboard: KeyboardInput = createKeyboard();
 
 /** True when the key (or code) is a scroll key that must be default-prevented. */
 export function shouldPreventDefault(key: string, code: string): boolean {
@@ -70,6 +89,32 @@ function setGameState(next: LoopState): void {
   }
 }
 
+/** Assign the placeholder column and mirror it to window.__pieceX. */
+function setPieceX(next: number): void {
+  pieceX = next;
+  if (typeof window !== "undefined") {
+    window.__pieceX = next;
+  }
+}
+
+/** Assign the mute flag and mirror it to window.__muted. */
+function setMuted(next: boolean): void {
+  muted = next;
+  if (typeof window !== "undefined") {
+    window.__muted = next;
+  }
+}
+
+/** Mirror all probe surfaces (called on boot and every frame). */
+function mirrorProbes(): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  window.__gameState = gameState;
+  window.__pieceX = pieceX;
+  window.__muted = muted;
+}
+
 /** Pure fixed-step slicing: whole steps contained in the accumulated time. */
 export function stepAccumulator(accumulatedMs: number): {
   steps: number;
@@ -80,9 +125,79 @@ export function stepAccumulator(accumulatedMs: number): {
   return { steps, remainder };
 }
 
-/** Advance placeholder logic by one fixed step (falling block only). */
-export function update(stepMs: number): void {
-  pieceY += (stepMs / STEP_MS) * PIECE_PX_PER_STEP;
+/**
+ * Pure column applier for drained intents: left intents shift one cell
+ * left, right intents one cell right (clamped to the playfield), and all
+ * other intents leave the column unchanged.
+ */
+export function stepPieceX(x: number, intent: InputIntent): number {
+  if (!Number.isFinite(x)) {
+    return PIECE_START_X;
+  }
+  switch (intent) {
+    case "left-press":
+    case "left-held":
+      return Math.max(0, Math.min(COLS - 1, Math.trunc(x) - 1));
+    case "right-press":
+    case "right-held":
+      return Math.max(0, Math.min(COLS - 1, Math.trunc(x) + 1));
+    default:
+      return Math.max(0, Math.min(COLS - 1, Math.trunc(x)));
+  }
+}
+
+/**
+ * Advance placeholder logic by one fixed step (falling block only).
+ * Soft-drop held multiplies the fall speed by SOFT_DROP_MULTIPLIER (~20x).
+ */
+export function update(stepMs: number, softDropHeld: boolean = false): void {
+  if (!Number.isFinite(stepMs) || stepMs <= 0) {
+    return;
+  }
+  const speed: number = softDropHeld
+    ? PIECE_PX_PER_STEP * SOFT_DROP_MULTIPLIER
+    : PIECE_PX_PER_STEP;
+  pieceY += (stepMs / STEP_MS) * speed;
+}
+
+/** Apply one drained intent to the placeholder state. */
+function applyIntent(intent: InputIntent): void {
+  if (gameState === "menu") {
+    return;
+  }
+  if (gameState === "paused") {
+    if (intent === "pause") {
+      setGameState("playing");
+    } else if (intent === "restart") {
+      pieceY = 0;
+      setPieceX(PIECE_START_X);
+      setGameState("playing");
+    } else if (intent === "mute") {
+      setMuted(!muted);
+    }
+    return;
+  }
+  switch (intent) {
+    case "left-press":
+    case "left-held":
+    case "right-press":
+    case "right-held":
+      setPieceX(stepPieceX(pieceX, intent));
+      break;
+    case "pause":
+      setGameState("paused");
+      break;
+    case "restart":
+      pieceY = 0;
+      setPieceX(PIECE_START_X);
+      setGameState("playing");
+      break;
+    case "mute":
+      setMuted(!muted);
+      break;
+    default:
+      break;
+  }
 }
 
 /** Attract paint: prompt text centered on a black background. */
@@ -100,7 +215,7 @@ function paint(canvas: HTMLCanvasElement): void {
   ctx.fillText(HINT, canvas.width / 2, canvas.height / 2);
 }
 
-/** Active paint: background plus falling block; never draws the prompt. */
+/** Active paint: background plus falling block at the column position. */
 function paintPlaying(canvas: HTMLCanvasElement): void {
   const ctx = canvas.getContext("2d");
   if (ctx === null) {
@@ -109,31 +224,44 @@ function paintPlaying(canvas: HTMLCanvasElement): void {
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = "#0ff";
+  const cellW: number = canvas.width / COLS;
+  const blockW: number = Math.min(20, cellW - 2);
+  const bx: number = pieceX * cellW + (cellW - blockW) / 2;
   const y: number = pieceY % canvas.height;
-  ctx.fillRect(canvas.width / 2 - 10, y, 20, 20);
+  ctx.fillRect(bx, y, blockW, 20);
 }
 
-/** rAF callback: fold elapsed time into fixed slices, then repaint. */
+/** rAF callback: drain keyboard intents, fold time into slices, repaint. */
 function frame(nowMs: number): void {
-  let deltaMs: number = nowMs - lastMs;
-  lastMs = nowMs;
+  let currentMs: number = nowMs;
+  if (!Number.isFinite(currentMs)) {
+    currentMs = lastMs;
+  }
+  let deltaMs: number = currentMs - lastMs;
+  lastMs = currentMs;
   if (deltaMs < 0) {
     deltaMs = 0;
   }
   if (deltaMs > MAX_DELTA_MS) {
     deltaMs = MAX_DELTA_MS;
   }
+  const intents: InputIntent[] = keyboard.update(currentMs);
+  for (const intent of intents) {
+    applyIntent(intent);
+  }
   accumulator += deltaMs;
   const sliced = stepAccumulator(accumulator);
   accumulator = sliced.remainder;
   if (gameState === "playing") {
+    const softHeld: boolean = keyboard.isHeld("softdrop");
     for (let i = 0; i < sliced.steps; i++) {
-      update(STEP_MS);
+      update(STEP_MS, softHeld);
     }
   }
+  mirrorProbes();
   const canvas = document.querySelector<HTMLCanvasElement>("#board");
   if (canvas !== null) {
-    if (gameState === "playing") {
+    if (gameState === "playing" || gameState === "paused") {
       paintPlaying(canvas);
     } else {
       paint(canvas);
@@ -156,23 +284,30 @@ function startLoop(): void {
   loopHandle = requestAnimationFrame(frame);
 }
 
-/** First-key boot: prevent scroll keys, then transition menu -> playing. */
-function onKeyDown(event: KeyboardEvent): void {
-  if (shouldPreventDefault(event.key, event.code)) {
-    event.preventDefault();
+/** Any-key boot: first key transitions menu -> playing (never swallows it). */
+function handleAnyKey(): void {
+  if (gameState !== "menu") {
+    return;
   }
-  if (gameState === "menu") {
-    pieceY = 0;
-    setGameState("playing");
-    const score = document.querySelector<HTMLElement>("#score");
-    if (score !== null) {
-      score.hidden = false;
-    }
-    startLoop();
+  pieceY = 0;
+  setPieceX(PIECE_START_X);
+  setGameState("playing");
+  const score = document.querySelector<HTMLElement>("#score");
+  if (score !== null) {
+    score.hidden = false;
   }
+  startLoop();
 }
 
-/** Wire canvas, score node, key handler, and the rAF loop. */
+/** Window blur: input is already cleared; pause active play. */
+function handleBlurPause(): void {
+  if (gameState === "playing") {
+    setGameState("paused");
+  }
+  mirrorProbes();
+}
+
+/** Wire canvas, score node, keyboard intents, and the rAF loop. */
 function boot(): void {
   const app = document.querySelector<HTMLElement>("#app");
   let canvas = document.querySelector<HTMLCanvasElement>("#board");
@@ -193,14 +328,19 @@ function boot(): void {
     score.hidden = true;
     app.appendChild(score);
   }
+  keyboard.detach();
+  keyboard = createKeyboard();
+  keyboard.attach({ onAnyKey: handleAnyKey, onBlur: handleBlurPause });
   setGameState("menu");
+  setPieceX(PIECE_START_X);
+  setMuted(false);
+  pieceY = 0;
   const score = document.querySelector<HTMLElement>("#score");
   if (score !== null) {
     score.hidden = true;
   }
   paint(canvas);
-  window.removeEventListener("keydown", onKeyDown);
-  window.addEventListener("keydown", onKeyDown);
+  mirrorProbes();
   startLoop();
 }
 
