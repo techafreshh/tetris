@@ -4,6 +4,7 @@ import type { PieceKind } from "../core/pieces";
 import {
   NEXT_COUNT,
   resetPanelsCache,
+  syncEventText,
   syncHold,
   syncNext,
   syncPanels,
@@ -183,5 +184,48 @@ describe("syncPanels", (): void => {
     const writes: number = totalWrites(nodes);
     syncPanels(asEl(nodes[0]), asEl(nodes[1]), asEl(nodes[2]), asEl(nodes[3]), asEl(nodes[4]), data);
     expect(totalWrites(nodes)).toBe(writes);
+  });
+});
+
+describe("syncEventText", (): void => {
+  it("writes text into an empty node", (): void => {
+    const host = new FakeElement();
+    syncEventText(asEl(host), "TETRIS!");
+    expect(host.textContent).toBe("TETRIS!");
+  });
+
+  it("performs no additional write on identical re-sync", (): void => {
+    const host = new FakeElement();
+    const node = asEl(host);
+    let stored: string | null = null;
+    let sets: number = 0;
+    Object.defineProperty(node, "textContent", {
+      configurable: true,
+      get(): string | null {
+        return stored;
+      },
+      set(value: string | null) {
+        sets += 1;
+        stored = value;
+      },
+    });
+    syncEventText(node, "COMBO x1");
+    expect(stored).toBe("COMBO x1");
+    expect(sets).toBe(1);
+    syncEventText(node, "COMBO x1");
+    expect(sets).toBe(1);
+  });
+
+  it("updates on changed text", (): void => {
+    const host = new FakeElement();
+    syncEventText(asEl(host), "SINGLE");
+    expect(host.textContent).toBe("SINGLE");
+    syncEventText(asEl(host), "BACK-TO-BACK TETRIS!");
+    expect(host.textContent).toBe("BACK-TO-BACK TETRIS!");
+  });
+
+  it("ignores a null node", (): void => {
+    syncEventText(null, "TETRIS!");
+    expect(true).toBe(true);
   });
 });

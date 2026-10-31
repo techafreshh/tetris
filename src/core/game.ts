@@ -7,7 +7,6 @@ import {
   HARD_DROP_POINTS_PER_CELL,
   HIDDEN_ROWS,
   LINES_PER_LEVEL,
-  LINE_CLEAR_SCORES,
   LOCK_DELAY_MS,
   SOFT_DROP_POINTS_PER_CELL,
   gravityIntervalMsForLevel,
@@ -18,6 +17,7 @@ import { createBag } from "./bag";
 import type { Bag } from "./bag";
 import { clearLines, createBoard } from "./board";
 import type { Board } from "./board";
+import { isDifficultClear, scoreLineClear } from "./scoring";
 
 export type { PieceKind };
 
@@ -69,6 +69,12 @@ export class Game {
   public held: PieceKind | null = null;
   /** True while the current piece may be held. */
   public canHold: boolean = true;
+  /** Consecutive scoring clears (-1 means no chain). */
+  public combo: number = -1;
+  /** True when the last scoring clear was difficult. */
+  public backToBack: boolean = false;
+  /** Sticky uppercase banner for the last scoring event. */
+  public lastEvent: string = "";
 
   /** Internal playfield. */
   private boardState: Board = createBoard();
@@ -86,6 +92,8 @@ export class Game {
   private lockTimer: number = 0;
   /** Lock resets consumed by the current piece. */
   private resetsUsed: number = 0;
+  /** True when the last successful action before lock was a rotation. */
+  private lastActionWasRotate: boolean = false;
 
   /**
    * Create a game that starts in `playing` with an active piece.
@@ -133,6 +141,10 @@ export class Game {
     this.level = 1;
     this.held = null;
     this.canHold = true;
+    this.combo = -1;
+    this.backToBack = false;
+    this.lastEvent = "";
+    this.lastActionWasRotate = false;
     this.fallTimer = 0;
     this.lockTimer = 0;
     this.resetsUsed = 0;
@@ -210,6 +222,7 @@ export class Game {
       return false;
     }
     this.activeState = { ...current, x: current.x - 1 };
+    this.lastActionWasRotate = false;
     this.tryResetLock();
     return true;
   }
@@ -227,6 +240,7 @@ export class Game {
       return false;
     }
     this.activeState = { ...current, x: current.x + 1 };
+    this.lastActionWasRotate = false;
     this.tryResetLock();
     return true;
   }
@@ -323,6 +337,7 @@ export class Game {
       this.activeState = { kind: swapped, x, y: 0, rotation: 0 };
     }
     this.canHold = false;
+    this.lastActionWasRotate = false;
     this.fallTimer = 0;
     this.lockTimer = 0;
     this.resetsUsed = 0;
@@ -394,6 +409,7 @@ export class Game {
       const ny: number = current.y - sy;
       if (!this.collidesAt(current.kind, target, nx, ny)) {
         this.activeState = { ...current, x: nx, y: ny, rotation: target };
+        this.lastActionWasRotate = true;
         this.tryResetLock();
         return true;
       }
@@ -406,6 +422,7 @@ export class Game {
     const kind: PieceKind = this.queue.shift() as PieceKind;
     this.queue.push(this.bag.next());
     const x: number = spawnXFor(kind);
+    this.lastActionWasRotate = false;
     if (this.collidesAt(kind, 0, x, 0)) {
       this.activeState = null;
       this.state = "gameover";
@@ -418,12 +435,119 @@ export class Game {
     this.canHold = true;
   }
 
+  /** True when a T piece locked after a rotation is surrounded on 3+ corners. */
+  private detectTSpin(piece: ActivePiece): boolean {
+    if (piece.kind !== "T") {
+      return false;
+    }
+    if (!this.lastActionWasRotate) {
+      return false;
+    }
+    const cx: number = piece.x + 1;
+    const cy: number = piece.y + 1;
+    const corners: readonly (readonly [number, number])[] = [
+      [cx - 1, cy - 1],
+      [cx + 1, cy - 1],
+      [cx - 1, cy + 1],
+      [cx + 1, cy + 1],
+    ];
+    let occupied: number = 0;
+    for (const [bx, by] of corners) {
+      if (bx < 0 || bx >= COLS || by < 0 || by >= this.boardState.rows) {
+        occupied++;
+        continue;
+      }
+      if (this.boardState.grid[by][bx] !== 0) {
+        occupied++;
+      }
+    }
+    return occupied >= 3;
+  }
+
+  /** Score one clear event: lines, level, combo, back-to-back, and banner. */
+  private applyClear(cleared: number, tSpin: boolean): void {
+    if (cleared <= 0) {
+      this.combo = -1;
+      if (tSpin) {
+        this.lastEvent = "T-SPIN";
+      }
+      return;
+    }
+    const capped: number = Math.min(Math.trunc(cleared), 4);
+    const previousLevel: number = this.level;
+    const previousBackToBack: boolean = this.backToBack;
+    const difficult: boolean = isDifficultClear(capped, tSpin);
+    this.lines += Math.trunc(cleared);
+    this.level = Math.floor(this.lines / LINES_PER_LEVEL) + 1;
+    this.combo += 1;
+    this.score += scoreLineClear(capped, this.level, {
+      backToBack: previousBackToBack,
+      combo: this.combo,
+      tSpin,
+    });
+    this.backToBack = difficult;
+    let base: string;
+    if (tSpin) {
+      const cappedT: number = Math.min(capped, 3);
+      if (cappedT <= 1) {
+        base = "T-SPIN SINGLE";
+      } else if (cappedT === 2) {
+        base = "T-SPIN DOUBLE";
+      } else {
+        base = "T-SPIN TRIPLE";
+      }
+    } else if (capped === 1) {
+      base = "SINGLE";
+    } else if (capped === 2) {
+      base = "DOUBLE";
+    } else if (capped === 3) {
+      base = "TRIPLE";
+    } else {
+      base = "TETRIS!";
+    }
+    let event: string = "";
+    if (previousBackToBack && difficult) {
+      event += "BACK-TO-BACK ";
+    }
+    event += base;
+    if (this.combo >= 1) {
+      event += ` COMBO x${this.combo}`;
+    }
+    if (this.level > previousLevel) {
+      event += " LEVEL UP!";
+    }
+    this.lastEvent = event;
+  }
+
+  /**
+   * Force a synthetic clear for probes: scores without touching the grid.
+   * @param lines Lines to score (floored, clamped 0-4, non-finite becomes 0).
+   * @param tSpin True to score the clear as a T-spin.
+   */
+  public debugClear(lines: number, tSpin: boolean = false): void {
+    if (this.state !== "playing") {
+      return;
+    }
+    let normalized: number = 0;
+    if (Number.isFinite(lines)) {
+      normalized = Math.floor(lines);
+    }
+    if (normalized < 0) {
+      normalized = 0;
+    }
+    if (normalized > 4) {
+      normalized = 4;
+    }
+    this.applyClear(normalized, tSpin === true);
+  }
+
   /** Stamp the active piece, score clears, and spawn the next piece. */
   private lockPiece(): void {
     if (this.activeState === null) {
       return;
     }
     const piece: ActivePiece = this.activeState;
+    const tSpin: boolean = this.detectTSpin(piece);
     const cells = PIECES[piece.kind].states[piece.rotation];
     for (const [cx, cy] of cells) {
       const bx: number = piece.x + cx;
@@ -437,12 +561,7 @@ export class Game {
       ([, cy]: readonly [number, number]): boolean => piece.y + cy < HIDDEN_ROWS,
     );
     const cleared = clearLines(this.boardState).count;
-    if (cleared > 0) {
-      const capped: number = Math.min(cleared, 4);
-      this.lines += cleared;
-      this.level = Math.floor(this.lines / LINES_PER_LEVEL) + 1;
-      this.score += LINE_CLEAR_SCORES[capped] * this.level;
-    }
+    this.applyClear(cleared, tSpin);
     this.fallTimer = 0;
     this.lockTimer = 0;
     this.resetsUsed = 0;

@@ -10,7 +10,7 @@ import { CSS_HEIGHT, CSS_WIDTH, renderPlayfield } from "./render/canvas";
 import type { RenderState } from "./render/canvas";
 import { createKeyboard } from "./input/keyboard";
 import type { InputIntent, KeyboardInput } from "./input/keyboard";
-import { resetPanelsCache, syncPanels } from "./ui/panels";
+import { resetPanelsCache, syncEventText, syncPanels } from "./ui/panels";
 import type { PanelData } from "./ui/panels";
 import { ensureOverlay, syncOverlay } from "./ui/overlay";
 
@@ -46,6 +46,7 @@ declare global {
     __pieceX: number;
     __muted: boolean;
     __game: Game;
+    __debugClear: (lines: number, tSpin?: boolean) => void;
   }
 }
 
@@ -68,6 +69,7 @@ const PROBE_SYNCED_METHODS: readonly string[] = [
   "start",
   "pause",
   "resume",
+  "debugClear",
 ];
 
 /** Current loop state; "menu" until the first keypress boots the game. */
@@ -196,12 +198,14 @@ function syncFromGame(): void {
   const score = document.querySelector<HTMLElement>("#score");
   const lines = document.querySelector<HTMLElement>("#lines");
   const level = document.querySelector<HTMLElement>("#level");
+  const eventText = document.querySelector<HTMLElement>("#event-text");
   if (
     hold === null &&
     queue === null &&
     score === null &&
     lines === null &&
-    level === null
+    level === null &&
+    eventText === null
   ) {
     return;
   }
@@ -213,6 +217,7 @@ function syncFromGame(): void {
     level: game.level,
   };
   syncPanels(hold, queue, score, lines, level, data);
+  syncEventText(eventText, game.lastEvent);
 }
 
 /** Push the loop state into the `#overlay` banner plus game-over summary. */
@@ -460,6 +465,26 @@ function handleResize(): void {
   }
 }
 
+/** Test hook: force a synthetic clear through the shared scoring path. */
+function debugClear(lines: number, tSpin?: boolean): void {
+  if (game.state === "gameover") {
+    game.start(DEFAULT_SEED);
+    resetPanelsCache();
+  }
+  if (gameState !== "playing") {
+    setGameState("playing");
+  }
+  if (typeof document !== "undefined") {
+    const stats = document.querySelector<HTMLElement>("#stats");
+    if (stats !== null) {
+      stats.hidden = false;
+    }
+  }
+  game.debugClear(lines, tSpin ?? false);
+  syncFromGame();
+  mirrorProbes();
+}
+
 /** Wire canvas, panels, keyboard intents, and the rAF loop. */
 function boot(): void {
   const app = document.querySelector<HTMLElement>("#app");
@@ -499,6 +524,7 @@ function boot(): void {
   mirrorProbes();
   if (typeof window !== "undefined") {
     window.addEventListener("resize", handleResize);
+    window.__debugClear = debugClear;
   }
   startLoop();
 }

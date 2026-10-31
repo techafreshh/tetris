@@ -211,6 +211,21 @@ export function syncStats(
 }
 
 /**
+ * Sync the event banner to uppercase bonus text (`TETRIS!`, `COMBO xN`).
+ * Writes only when the text changes so sticky events survive stat syncs.
+ * @param node The `#event-text` element (null-safe no-op).
+ * @param text Uppercase event text, or empty to clear.
+ */
+export function syncEventText(node: HTMLElement | null, text: string): void {
+  if (node === null) {
+    return;
+  }
+  if (node.textContent !== text) {
+    node.textContent = text;
+  }
+}
+
+/**
  * Sync every side panel from one snapshot; repeats of the same snapshot
  * perform no DOM writes.
  * @param holdEl The `#hold-slot` element (null-safe no-op).
