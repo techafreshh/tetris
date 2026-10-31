@@ -5,7 +5,7 @@
 // every mutating call so black-box probes observe queue shifts and score.
 
 import { COLS } from "./core/constants";
-import { createGame, type Game } from "./core/game";
+import { createGame, type Game, type GameState } from "./core/game";
 import { CSS_HEIGHT, CSS_WIDTH, renderPlayfield } from "./render/canvas";
 import type { RenderState } from "./render/canvas";
 import { createEffects } from "./render/effects";
@@ -15,6 +15,12 @@ import type { InputIntent, KeyboardInput } from "./input/keyboard";
 import { resetPanelsCache, syncEventText, syncPanels } from "./ui/panels";
 import type { PanelData } from "./ui/panels";
 import { ensureOverlay, syncOverlay } from "./ui/overlay";
+import {
+  playSfx,
+  setMuted as setSfxMuted,
+  unlockAudio,
+} from "./audio/sfx";
+import type { SfxName } from "./audio/sfx";
 import { loadRecords, recordRun } from "./storage/records";
 
 /**
@@ -144,11 +150,36 @@ function setGameState(next: LoopState): void {
   syncOverlayFromState();
 }
 
-/** Assign the mute flag and mirror it to window.__muted. */
+/** Assign the mute flag, propagate it to sfx, and mirror it to probes. */
 function setMuted(next: boolean): void {
   muted = next;
+  try {
+    setSfxMuted(next);
+  } catch {
+    // The sfx setter never throws; audio must not gate logic regardless.
+  }
   if (typeof window !== "undefined") {
     window.__muted = next;
+  }
+  syncMuteIndicator();
+}
+
+/** Push the mute flag into `#mute-indicator` (null-safe, never throws). */
+function syncMuteIndicator(): void {
+  try {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const node = document.querySelector<HTMLElement>("#mute-indicator");
+    if (node === null) {
+      return;
+    }
+    const text: string = muted ? "MUTED" : "";
+    if (node.textContent !== text) {
+      node.textContent = text;
+    }
+  } catch {
+    // HUD writes must never break the game loop.
   }
 }
 
@@ -335,6 +366,66 @@ export function stepPieceX(x: number, intent: InputIntent): number {
     default:
       return Math.max(0, Math.min(COLS - 1, Math.trunc(x)));
   }
+}
+
+/** Minimal result snapshot diffed for lock/clear/level-up/game-over sounds. */
+export interface ResultSnapshot {
+  /** Total lines cleared. */
+  readonly lines: number;
+  /** Current level. */
+  readonly level: number;
+  /** Lifecycle state of the game. */
+  readonly state: GameState;
+  /** Total locks this run. */
+  readonly locks: number;
+}
+
+/** Read the current result snapshot from the live game. */
+export function snapshotResults(): ResultSnapshot {
+  return {
+    lines: game.lines,
+    level: game.level,
+    state: game.state,
+    locks: game.locks,
+  };
+}
+
+/**
+ * Pure fanfare diff: layers every applicable result sound (a level-up
+ * always coincides with a clear, so results compose instead of racing).
+ * Negative line deltas (start() resets) emit nothing.
+ * @param before Snapshot before the action or step loop.
+ * @param after Snapshot after the action or step loop.
+ * @param opts `{ suppressLock: true }` when the caller already covered the
+ * lock itself (the hard-drop thunk).
+ * @returns Sounds to play, in fanfare order.
+ */
+export function diffResults(
+  before: ResultSnapshot,
+  after: ResultSnapshot,
+  opts?: { suppressLock?: boolean },
+): SfxName[] {
+  const sounds: SfxName[] = [];
+  const cleared: number = after.lines - before.lines;
+  if (cleared >= 4) {
+    sounds.push("tetris");
+  } else if (cleared > 0) {
+    sounds.push("clear");
+  }
+  if (after.level > before.level) {
+    sounds.push("levelup");
+  }
+  if (after.state === "gameover" && before.state !== "gameover") {
+    sounds.push("gameover");
+  } else if (
+    opts?.suppressLock !== true &&
+    cleared <= 0 &&
+    after.state === "playing" &&
+    after.locks > before.locks
+  ) {
+    sounds.push("lock");
+  }
+  return sounds;
 }
 
 /**
@@ -536,24 +627,47 @@ function applyIntent(intent: InputIntent): void {
   switch (intent) {
     case "left-press":
     case "left-held":
-      game.moveLeft();
+      if (game.moveLeft()) {
+        playSfx("move");
+      }
       break;
     case "right-press":
     case "right-held":
-      game.moveRight();
+      if (game.moveRight()) {
+        playSfx("move");
+      }
       break;
     case "rotate-cw":
-      game.rotateCW();
+      if (game.rotateCW()) {
+        playSfx("rotate");
+      }
       break;
     case "rotate-ccw":
-      game.rotateCCW();
+      if (game.rotateCCW()) {
+        playSfx("rotate");
+      }
       break;
-    case "hard-drop":
+    case "hard-drop": {
+      const before: ResultSnapshot = snapshotResults();
       game.hardDrop();
+      playSfx("harddrop");
+      const after: ResultSnapshot = snapshotResults();
+      for (const name of diffResults(before, after, { suppressLock: true })) {
+        playSfx(name);
+      }
       break;
-    case "hold":
+    }
+    case "hold": {
+      const before: ResultSnapshot = snapshotResults();
       game.hold();
+      const after: ResultSnapshot = snapshotResults();
+      for (const name of diffResults(before, after)) {
+        if (name === "gameover") {
+          playSfx(name);
+        }
+      }
       break;
+    }
     case "pause":
       game.pause();
       setGameState("paused");
@@ -621,12 +735,17 @@ function frame(nowMs: number): void {
   const sliced = stepAccumulator(accumulator);
   accumulator = sliced.remainder;
   if (gameState === "playing") {
+    const before: ResultSnapshot = snapshotResults();
     const softHeld: boolean = keyboard.isHeld("softdrop");
     for (let i = 0; i < sliced.steps; i++) {
       update(STEP_MS, softHeld);
       if (gameState !== "playing") {
         break;
       }
+    }
+    const after: ResultSnapshot = snapshotResults();
+    for (const name of diffResults(before, after)) {
+      playSfx(name);
     }
     syncFromGame();
   }
@@ -661,8 +780,9 @@ function startLoop(): void {
   loopHandle = requestAnimationFrame(frame);
 }
 
-/** Any-key boot: first key transitions menu -> playing (never swallows it). */
+/** Any-key boot: unlock audio in the gesture, then menu -> playing. */
 function handleAnyKey(): void {
+  unlockAudio();
   if (gameState !== "menu") {
     return;
   }

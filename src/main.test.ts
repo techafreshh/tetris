@@ -3,10 +3,12 @@ import {
   PIECE_START_X,
   STEP_MS,
   computeRunPps,
+  diffResults,
   gameOverSummaryText,
   shouldPreventDefault,
   stepAccumulator,
   stepPieceX,
+  type ResultSnapshot,
 } from "./main";
 
 describe("stepAccumulator", (): void => {
@@ -115,5 +117,60 @@ describe("stepPieceX", (): void => {
       x = stepPieceX(x, "left-held");
     }
     expect(x).toBe(1);
+  });
+});
+
+describe("diffResults", (): void => {
+  function snap(overrides: Partial<ResultSnapshot> = {}): ResultSnapshot {
+    return {
+      lines: 0,
+      level: 1,
+      state: "playing",
+      locks: 0,
+      ...overrides,
+    };
+  }
+
+  it("returns lock on a locks-only advance", (): void => {
+    expect(diffResults(snap(), snap({ locks: 1 }))).toEqual(["lock"]);
+  });
+
+  it("returns clear on 1-3 lines", (): void => {
+    expect(diffResults(snap(), snap({ lines: 2, locks: 1 }))).toEqual([
+      "clear",
+    ]);
+  });
+
+  it("returns tetris on 4 lines", (): void => {
+    expect(diffResults(snap(), snap({ lines: 4, locks: 1 }))).toEqual([
+      "tetris",
+    ]);
+  });
+
+  it("appends levelup when the level rises with a clear", (): void => {
+    expect(
+      diffResults(snap({ lines: 9 }), snap({ lines: 10, level: 2, locks: 1 })),
+    ).toEqual(["clear", "levelup"]);
+  });
+
+  it("includes gameover on the terminal transition instead of lock", (): void => {
+    expect(
+      diffResults(snap(), snap({ state: "gameover", locks: 1 })),
+    ).toEqual(["gameover"]);
+  });
+
+  it("emits nothing on a restart-style reset", (): void => {
+    expect(
+      diffResults(
+        snap({ lines: 5, level: 2, locks: 3 }),
+        snap({ locks: 0 }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("suppresses lock under suppressLock", (): void => {
+    expect(
+      diffResults(snap(), snap({ locks: 1 }), { suppressLock: true }),
+    ).toEqual([]);
   });
 });
