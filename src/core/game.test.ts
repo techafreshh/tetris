@@ -43,6 +43,48 @@ describe("boot state", (): void => {
   });
 });
 
+describe("run counters", (): void => {
+  it("starts at zero pieces and zero max combo", (): void => {
+    const game = createGame(1);
+    expect(game.piecesPlaced).toBe(0);
+    expect(game.maxCombo).toBe(0);
+  });
+
+  it("counts locks and tracks the highest combo chain", (): void => {
+    const game = createGame(7);
+    game.debugClear(1);
+    expect(game.combo).toBe(0);
+    expect(game.maxCombo).toBe(0);
+    game.debugClear(1);
+    expect(game.combo).toBe(1);
+    expect(game.maxCombo).toBe(1);
+    game.debugClear(0);
+    expect(game.combo).toBe(-1);
+    expect(game.maxCombo).toBe(1);
+  });
+
+  it("increments piecesPlaced once per hardDrop lock", (): void => {
+    const game = createGame(42);
+    expect(game.piecesPlaced).toBe(0);
+    game.hardDrop();
+    expect(game.piecesPlaced).toBe(1);
+    game.hardDrop();
+    expect(game.piecesPlaced).toBe(2);
+  });
+
+  it("resets counters on start", (): void => {
+    const game = createGame(8);
+    game.hardDrop();
+    game.debugClear(1);
+    game.debugClear(1);
+    expect(game.piecesPlaced).toBeGreaterThan(0);
+    game.start();
+    expect(game.piecesPlaced).toBe(0);
+    expect(game.maxCombo).toBe(0);
+    expect(game.combo).toBe(-1);
+  });
+});
+
 describe("hardDrop", (): void => {
   it("locks a piece, spawns the next, and grows score with 4 new cells", (): void => {
     const game = createGame(42);

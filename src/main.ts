@@ -15,6 +15,7 @@ import type { InputIntent, KeyboardInput } from "./input/keyboard";
 import { resetPanelsCache, syncEventText, syncPanels } from "./ui/panels";
 import type { PanelData } from "./ui/panels";
 import { ensureOverlay, syncOverlay } from "./ui/overlay";
+import { loadRecords, recordRun } from "./storage/records";
 
 /**
  * Fixed logic step in milliseconds: exactly one 60 Hz slice (1000/60).
@@ -77,6 +78,21 @@ const PROBE_SYNCED_METHODS: readonly string[] = [
 /** Current loop state; "menu" until the first keypress boots the game. */
 let gameState: LoopState = "menu";
 
+/** Wall-clock ms of the current run start (performance time where available). */
+let runStartMs: number = 0;
+
+/** True once the current run has been recorded (one record per run). */
+let runRecorded: boolean = false;
+
+/** Cached high score for HUD refreshes without touching storage. */
+let cachedHighScore: number = 0;
+
+/** Run PPS frozen at record time so the overlay summary stays stable. */
+let cachedPps: number = 0;
+
+/** Whether the recorded run set a new best (frozen for the overlay). */
+let cachedNewBest: boolean = false;
+
 /** Live core game driven by the loop and drained keyboard intents. */
 let game: Game = createGame(DEFAULT_SEED);
 
@@ -114,9 +130,16 @@ export function shouldPreventDefault(key: string, code: string): boolean {
 
 /** Assign the loop state and mirror it to window.__gameState for probes. */
 function setGameState(next: LoopState): void {
+  const prev: LoopState = gameState;
   gameState = next;
   if (typeof window !== "undefined") {
     window.__gameState = next;
+  }
+  if (next === "playing" && prev !== "playing" && prev !== "paused") {
+    startFreshRun();
+  }
+  if (next === "gameover") {
+    maybeRecordGameOver();
   }
   syncOverlayFromState();
 }
@@ -134,8 +157,10 @@ function mirrorProbes(): void {
   if (typeof window === "undefined") {
     return;
   }
-  if (game.state === "gameover") {
+  if (game.state === "gameover" && gameState !== "gameover") {
     gameState = "gameover";
+    window.__gameState = "gameover";
+    maybeRecordGameOver();
   }
   window.__gameState = gameState;
   const active = game.active;
@@ -143,6 +168,142 @@ function mirrorProbes(): void {
   window.__muted = muted;
   window.__game = game;
   syncOverlayFromState();
+}
+
+/** Monotonic clock for run timing: performance time where available. */
+function runNowMs(): number {
+  try {
+    if (
+      typeof performance !== "undefined" &&
+      typeof performance.now === "function"
+    ) {
+      const now: number = performance.now();
+      if (Number.isFinite(now)) {
+        return now;
+      }
+    }
+  } catch {
+    // Fall through to Date.now() below.
+  }
+  return Date.now();
+}
+
+/** Reset the run clock for a fresh run; clears the one-record guard. */
+function startFreshRun(): void {
+  runStartMs = runNowMs();
+  runRecorded = false;
+  cachedPps = 0;
+  cachedNewBest = false;
+}
+
+/**
+ * Pieces per second for a run, guarded to 0 when elapsed is missing,
+ * non-finite, or under 50ms.
+ * @param pieces Pieces placed this run.
+ * @param elapsedSec Run wall-clock seconds.
+ * @returns Finite non-negative rate.
+ */
+export function computeRunPps(pieces: number, elapsedSec: number): number {
+  if (!Number.isFinite(pieces) || !Number.isFinite(elapsedSec)) {
+    return 0;
+  }
+  if (elapsedSec < 0.05) {
+    return 0;
+  }
+  const rate: number = Math.floor(pieces) / elapsedSec;
+  if (!Number.isFinite(rate) || rate < 0) {
+    return 0;
+  }
+  return rate;
+}
+
+/**
+ * Game-over summary line carrying the exact uppercase probes LEVEL, PPS,
+ * and COMBO plus the numeric score and an optional NEW BEST suffix.
+ * @param score Final run score.
+ * @param lines Final run lines.
+ * @param level Final run level.
+ * @param pps Run pieces-per-second rate.
+ * @param maxCombo Highest combo chain reached this run.
+ * @param isNewBest True when the run beat the stored high score.
+ * @returns Summary text for the `#overlay` summary hook.
+ */
+export function gameOverSummaryText(
+  score: number,
+  lines: number,
+  level: number,
+  pps: number,
+  maxCombo: number,
+  isNewBest: boolean,
+): string {
+  const safeScore: number = Number.isFinite(score) ? Math.trunc(score) : 0;
+  const safeLines: number = Number.isFinite(lines) ? Math.trunc(lines) : 0;
+  const safeLevel: number = Number.isFinite(level) ? Math.trunc(level) : 1;
+  const safePps: number = Number.isFinite(pps) && pps >= 0 ? pps : 0;
+  const safeCombo: number = Number.isFinite(maxCombo) ? Math.trunc(maxCombo) : 0;
+  let text: string =
+    `Score ${safeScore} · Lines ${safeLines} · LEVEL ${safeLevel} ` +
+    `· PPS ${safePps.toFixed(2)} · COMBO ${safeCombo}`;
+  if (isNewBest === true) {
+    text += " · NEW BEST";
+  }
+  return text;
+}
+
+/** Write the cached high score into `#high-score` (null-safe, never throws). */
+function syncHighScoreHud(): void {
+  try {
+    if (typeof document === "undefined") {
+      return;
+    }
+    const node = document.querySelector<HTMLElement>("#high-score");
+    if (node === null) {
+      return;
+    }
+    const text: string = String(Math.trunc(cachedHighScore));
+    if (node.textContent !== text) {
+      node.textContent = text;
+    }
+  } catch {
+    // HUD writes must never break the game loop.
+  }
+}
+
+/**
+ * Record the current run once: compute PPS from the wall clock, persist
+ * via the records store, and freeze overlay values. Never throws and never
+ * depends on storage success for the overlay.
+ */
+function maybeRecordGameOver(): void {
+  if (runRecorded) {
+    return;
+  }
+  if (game.state !== "gameover") {
+    return;
+  }
+  try {
+    const elapsedSec: number = (runNowMs() - runStartMs) / 1000;
+    const pieces: number = Number.isFinite(game.piecesPlaced)
+      ? game.piecesPlaced
+      : 0;
+    const pps: number = computeRunPps(pieces, elapsedSec);
+    let result: { records: { highScore: number }; isNewBest: boolean };
+    try {
+      result = recordRun({ score: game.score, lines: game.lines, pps });
+    } catch {
+      result = {
+        records: { highScore: cachedHighScore },
+        isNewBest: false,
+      };
+    }
+    cachedHighScore = result.records.highScore;
+    cachedPps = pps;
+    cachedNewBest = result.isNewBest;
+    runRecorded = true;
+    syncHighScoreHud();
+  } catch {
+    runRecorded = true;
+  }
 }
 
 /** Pure fixed-step slicing: whole steps contained in the accumulated time. */
@@ -263,6 +424,7 @@ function syncFromGame(): void {
   };
   syncPanels(hold, queue, score, lines, level, data);
   syncEventText(eventText, game.lastEvent);
+  syncHighScoreHud();
 }
 
 /** Push the loop state into the `#overlay` banner plus game-over summary. */
@@ -275,7 +437,26 @@ function syncOverlayFromState(): void {
     return;
   }
   if (gameState === "gameover") {
-    syncOverlay(overlay, gameState, `Score ${game.score} · Lines ${game.lines}`);
+    maybeRecordGameOver();
+    const pps: number = runRecorded
+      ? cachedPps
+      : computeRunPps(
+          Number.isFinite(game.piecesPlaced) ? game.piecesPlaced : 0,
+          (runNowMs() - runStartMs) / 1000,
+        );
+    const isBest: boolean = runRecorded ? cachedNewBest : false;
+    const maxCombo: number = Number.isFinite(game.maxCombo)
+      ? Math.trunc(game.maxCombo)
+      : 0;
+    const summary: string = gameOverSummaryText(
+      game.score,
+      game.lines,
+      game.level,
+      pps,
+      maxCombo < 0 ? 0 : maxCombo,
+      isBest,
+    );
+    syncOverlay(overlay, gameState, summary);
   } else {
     syncOverlay(overlay, gameState);
   }
@@ -300,6 +481,9 @@ function patchGameSync(target: Game): void {
     }
     const wrapped = (...args: never[]): unknown => {
       const result: unknown = fn.apply(target, args);
+      if (key === "start") {
+        startFreshRun();
+      }
       syncFromGame();
       if (target.state === "gameover") {
         setGameState("gameover");
@@ -539,6 +723,16 @@ function debugClear(lines: number, tSpin?: boolean): void {
 
 /** Wire canvas, panels, keyboard intents, and the rAF loop. */
 function boot(): void {
+  try {
+    const stored = loadRecords();
+    cachedHighScore = stored.highScore;
+  } catch {
+    cachedHighScore = 0;
+  }
+  runStartMs = runNowMs();
+  runRecorded = false;
+  cachedPps = 0;
+  cachedNewBest = false;
   const app = document.querySelector<HTMLElement>("#app");
   let canvas = document.querySelector<HTMLCanvasElement>("#board");
   if (canvas === null) {

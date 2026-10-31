@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   PIECE_START_X,
   STEP_MS,
+  computeRunPps,
+  gameOverSummaryText,
   shouldPreventDefault,
   stepAccumulator,
   stepPieceX,
@@ -39,6 +41,42 @@ describe("shouldPreventDefault", (): void => {
   });
 });
 
+describe("gameOverSummaryText", (): void => {
+  it("contains LEVEL, PPS, COMBO and the numeric score", (): void => {
+    const text: string = gameOverSummaryText(500, 12, 2, 1.5, 3, false);
+    expect(text).toContain("LEVEL");
+    expect(text).toContain("PPS");
+    expect(text).toContain("COMBO");
+    expect(text).toContain("500");
+    expect(text).not.toContain("NEW BEST");
+  });
+
+  it("appends NEW BEST only when beaten", (): void => {
+    const best: string = gameOverSummaryText(500, 12, 2, 1.5, 3, true);
+    expect(best).toContain("NEW BEST");
+    expect(best).toContain("500");
+    const plain: string = gameOverSummaryText(0, 0, 1, 0, 0, false);
+    expect(plain).not.toContain("NEW BEST");
+  });
+
+  it("formats PPS with two decimals", (): void => {
+    const text: string = gameOverSummaryText(10, 2, 1, 1.5, 0, false);
+    expect(text).toContain("PPS 1.50");
+  });
+});
+
+describe("computeRunPps", (): void => {
+  it("guards missing, non-finite, or sub-50ms elapsed to zero", (): void => {
+    expect(computeRunPps(10, 0)).toBe(0);
+    expect(computeRunPps(10, 0.04)).toBe(0);
+    expect(computeRunPps(10, Number.NaN)).toBe(0);
+    expect(computeRunPps(Number.NaN, 2)).toBe(0);
+  });
+
+  it("divides floored pieces by elapsed seconds", (): void => {
+    expect(computeRunPps(10, 2)).toBeCloseTo(5, 10);
+  });
+});
 describe("STEP_MS", (): void => {
   it("is exactly one 1000/60ms slice", (): void => {
     expect(STEP_MS).toBe(1000 / 60);
