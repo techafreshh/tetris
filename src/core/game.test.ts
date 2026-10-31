@@ -1,6 +1,6 @@
 // Behavior tests for the pure game state machine.
 import { describe, expect, it } from "vitest";
-import { COLS, HIDDEN_ROWS, ROWS } from "./constants";
+import { COLS, HIDDEN_ROWS, ROWS, gravityIntervalMsForLevel } from "./constants";
 import { createGame } from "./game";
 
 function countCells(grid: number[][]): number {
@@ -168,5 +168,43 @@ describe("pause and start", (): void => {
     expect(countCells(game.board)).toBe(0);
     expect(game.active).not.toBeNull();
     expect(game.next).toHaveLength(5);
+  });
+});
+
+describe("gravity curve levels", (): void => {
+  it("advances level 1 to 2 when lines go 9 to 10 via update", (): void => {
+    const game = createGame(7);
+    game.lines = 9;
+    const bottom: number = game.board.length - 1;
+    for (let x: number = 0; x < COLS; x++) {
+      game.board[bottom][x] = 1;
+    }
+    let guard: number = 0;
+    while (game.softDrop() && guard < 100) {
+      guard++;
+    }
+    game.update(600);
+    expect(game.lines).toBe(10);
+    expect(game.level).toBe(2);
+  });
+
+  it("falls strictly faster at level 2 than level 1", (): void => {
+    expect(gravityIntervalMsForLevel(2)).toBeLessThan(
+      gravityIntervalMsForLevel(1),
+    );
+  });
+
+  it("scores soft +1 and hard +2 per cell", (): void => {
+    const softGame = createGame(42);
+    const softBefore: number = softGame.score;
+    expect(softGame.softDrop()).toBe(true);
+    expect(softGame.score - softBefore).toBe(1);
+    const hardGame = createGame(42);
+    const hardBefore: number = hardGame.score;
+    const cellsBefore: number = countCells(hardGame.board);
+    const distance: number = hardGame.hardDrop();
+    expect(distance).toBeGreaterThan(0);
+    expect(hardGame.score - hardBefore).toBe(2 * distance);
+    expect(countCells(hardGame.board)).toBe(cellsBefore + 4);
   });
 });
